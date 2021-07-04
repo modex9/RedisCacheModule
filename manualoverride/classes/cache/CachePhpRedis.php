@@ -29,19 +29,9 @@ class CachePhpRedis
     protected $redis;
 
     /**
-     * @var RedisParams
-     */
-    protected $_params = array();
-
-    /**
      * @var bool Connection status
      */
     public $is_connected = false;
-
-    /**
-     * @var array Store list of tables and their associated keys for SQL cache (warning: this var must not be initialized here !)
-     */
-    protected $sql_tables_cached = null;
 
     /**
      * @var array List of blacklisted tables for SQL cache, these tables won't be indexed
@@ -61,23 +51,12 @@ class CachePhpRedis
         'page_viewed',
     );
 
-    const SQL_TABLES_NAME = 'tablesCached';
-
     /**
-     * @var array List all keys of cached data and their associated ttl
+     * CachePhpRedis constructor.
      */
-    protected $keys = array();
-
     public function __construct()
     {
         $this->connect();
-
-        if ($this->is_connected) {
-            $this->keys = @$this->redis->get(_COOKIE_IV_);
-            if (!is_array($this->keys)) {
-                $this->keys = array();
-            }
-        }
     }
 
     public function __destruct()
@@ -109,9 +88,14 @@ class CachePhpRedis
         }
     }
 
-    private function _set($key, $value, $ttl = 0)
+    /**
+     * @param $key
+     * @param $value
+     * @param int $ttl
+     * @return false
+     */
+    private function _set($key, $value)
     {
-
         if (!$this->is_connected) {
             return false;
         }
@@ -120,8 +104,7 @@ class CachePhpRedis
     }
 
     /**
-     * @see Cache::_exists()
-     *
+     * @param $key
      * @return bool
      */
     private function _exists($key)
@@ -130,15 +113,14 @@ class CachePhpRedis
             return false;
         }
 
-        return isset($this->keys[$key]);
+        return (bool) $this->get($key);
     }
 
     /**
-     * @see Cache::_delete()
-     *
-     * @return bool
+     * @param $key
+     * @return false
      */
-    private function _delete($key)
+    public function delete($key)
     {
         if (!$this->is_connected) {
             return false;
@@ -148,23 +130,6 @@ class CachePhpRedis
     }
 
     /**
-     * @see Cache::_writeKeys()
-     *
-     * @return bool
-     */
-    private function _writeKeys()
-    {
-        if (!$this->is_connected) {
-            return false;
-        }
-        $this->redis->set(_COOKIE_IV_, $this->keys);
-
-        return true;
-    }
-
-    /**
-     * @see Cache::flush()
-     *
      * @return bool
      */
     public function flush()
@@ -203,9 +168,10 @@ class CachePhpRedis
         $sql = new DbQuery();
         $sql->select('`name`, `value`');
         $sql->from('configuration');
-        $sql->where('`name` = \'PREDIS_SERVER\' OR `name` = \'PREDIS_PORT\' OR name = \'PREDIS_AUTH\' OR name = \'PREDIS_DB\'');
+        $sql->where("`name` = 'PREDIS_SERVER' OR `name` = 'PREDIS_PORT' OR name = 'PREDIS_AUTH' OR name = 'PREDIS_DB'");
         $params = Db::getInstance(_PS_USE_SQL_SLAVE_)->executeS($sql, true, false);
-        foreach ($params as $key => $val) {
+        foreach ($params as $key => $val)
+        {
             $server[$val['name']] = $val['value'];
         }
 
@@ -227,6 +193,11 @@ class CachePhpRedis
         return $this->redis->get($key);
     }
 
+    /**
+     * @param $query
+     * @param $result
+     * @return bool
+     */
     public function setQuery($query, $result)
     {
         if ($this->isBlacklist($query))
@@ -234,13 +205,6 @@ class CachePhpRedis
 
         if (empty($result) || $result === false)
             $result = array();
-
-        if (is_null($this->sql_tables_cached))
-        {
-            $this->sql_tables_cached = $this->get(Tools::encryptIV(self::SQL_TABLES_NAME));
-            if (!is_array($this->sql_tables_cached))
-                $this->sql_tables_cached = array();
-        }
 
         // Store query results in cache
         $key = Tools::encryptIV($query);
@@ -250,17 +214,22 @@ class CachePhpRedis
 
         // Get all table from the query and save them in cache
         if ($tables = $this->getTables($query))
+        {
             foreach ($tables as $table)
             {
-                if (!isset($this->sql_tables_cached[$table][$key]))
+                if (!$this->redis->hGet($table, $key))
                 {
                     $this->adjustTableCacheSize($table);
-                    $this->sql_tables_cached[$table][$key] = true;
+                    $this->redis->hSet($table, $key, true);
                 }
             }
-        $this->set(Tools::encryptIV(self::SQL_TABLES_NAME), $this->sql_tables_cached);
+        }
     }
 
+    /**
+     * @param $query
+     * @return bool
+     */
     protected function isBlacklist($query)
     {
         foreach ($this->blacklist as $find)
@@ -269,100 +238,79 @@ class CachePhpRedis
         return false;
     }
 
+    /**
+     * @param $key
+     * @param $value
+     * @param int $ttl
+     * @return bool
+     */
     public function set($key, $value, $ttl = 0)
     {
         if ($this->_set($key, $value, $ttl))
         {
-            if ($ttl < 0)
-                $ttl = 0;
-
-            $this->keys[$key] = ($ttl == 0) ? 0 : time() + $ttl;
-            $this->_writeKeys();
             return true;
         }
         return false;
     }
 
+    /**
+     * @param $query
+     */
     public function deleteQuery($query)
     {
-        if (is_null($this->sql_tables_cached))
-        {
-            $this->sql_tables_cached = $this->get(Tools::encryptIV(self::SQL_TABLES_NAME));
-            if (!is_array($this->sql_tables_cached))
-                $this->sql_tables_cached = array();
-        }
-
         if ($tables = $this->getTables($query))
+        {
             foreach ($tables as $table)
-                if (isset($this->sql_tables_cached[$table]))
+            {
+                $table_queries = $this->redis->hKeys($table);
+                if ($table_queries)
                 {
-                    foreach (array_keys($this->sql_tables_cached[$table]) as $fs_key)
+                    foreach ($table_queries as $fs_key)
                     {
                         $this->delete($fs_key);
                         $this->delete($fs_key.'_nrows');
+                        $this->redis->hDel($table, $fs_key);
                     }
-                    unset($this->sql_tables_cached[$table]);
                 }
-        $this->set(Tools::encryptIV(self::SQL_TABLES_NAME), $this->sql_tables_cached);
+            }
+        }
     }
 
+    /**
+     * @param $string
+     * @return array|false
+     */
     protected function getTables($string)
     {
         if (preg_match_all('/(?:from|join|update|into)\s+`?('._DB_PREFIX_.'[0-9a-z_-]+)(?:`?\s{0,},\s{0,}`?('._DB_PREFIX_.'[0-9a-z_-]+)`?)?(?:`|\s+|\Z)(?!\s*,)/Umsi', $string, $res))
         {
             foreach ($res[2] as $table)
+            {
                 if ($table != '')
                     $res[1][] = $table;
+            }
             return array_unique($res[1]);
         }
         else
             return false;
     }
 
+    /**
+     * @param $table
+     */
     protected function adjustTableCacheSize($table)
     {
-        if (isset($this->sql_tables_cached[$table])
-            && count($this->sql_tables_cached[$table]) > 5000)
+        $table_queries = $this->get($table);
+        if ($table_queries && count($table_queries) > 5000)
         {
             // make sure the cache doesn't contains too many elements : delete the first 1000
-            $table_buffer = array_slice($this->sql_tables_cached[$table], 0, 1000, true);
+            $table_buffer = array_slice($table_queries, 0, 1000, true);
             foreach($table_buffer as $fs_key => $value)
             {
                 $this->delete($fs_key);
                 $this->delete($fs_key.'_nrows');
-                unset($this->sql_tables_cached[$table][$fs_key]);
+                $this->redis->hDel($table, $fs_key);
             }
         }
     }
-
-    public function delete($key)
-    {
-        // Get list of keys to delete
-        $keys = array();
-        if ($key == '*')
-            $keys = $this->keys;
-        elseif (strpos($key, '*') === false)
-            $keys = array($key);
-        else
-        {
-            $pattern = str_replace('\\*', '.*', preg_quote($key));
-            foreach ($this->keys as $k => $ttl)
-                if (preg_match('#^'.$pattern.'$#', $k))
-                    $keys[] = $k;
-        }
-
-        // Delete keys
-        foreach ($keys as $key)
-        {
-            if (!isset($this->keys[$key]))
-                continue;
-
-            if ($this->_delete($key))
-                unset($this->keys[$key]);
-        }
-
-        $this->_writeKeys();
-        return $keys;
-    }
-
 }
