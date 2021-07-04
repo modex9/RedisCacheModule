@@ -43,6 +43,7 @@ class PhpRedisCache extends Module
 
         $this->bootstrap = true;
         $this->context->smarty->assign('module_name', $this->name);
+        $this->redis = Cache::getInstance();
     }
 
     public function install()
