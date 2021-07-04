@@ -109,7 +109,7 @@ class CachePhpRedis
         }
     }
 
-    protected function _set($key, $value, $ttl = 0)
+    private function _set($key, $value, $ttl = 0)
     {
 
         if (!$this->is_connected) {
@@ -120,25 +120,11 @@ class CachePhpRedis
     }
 
     /**
-     * @see Cache::_get()
-     *
-     * @return bool
-     */
-    protected function _get($key)
-    {
-        if (!$this->is_connected) {
-            return false;
-        }
-
-        return $this->redis->get($key);
-    }
-
-    /**
      * @see Cache::_exists()
      *
      * @return bool
      */
-    protected function _exists($key)
+    private function _exists($key)
     {
         if (!$this->is_connected) {
             return false;
@@ -152,7 +138,7 @@ class CachePhpRedis
      *
      * @return bool
      */
-    protected function _delete($key)
+    private function _delete($key)
     {
         if (!$this->is_connected) {
             return false;
@@ -166,7 +152,7 @@ class CachePhpRedis
      *
      * @return bool
      */
-    protected function _writeKeys()
+    private function _writeKeys()
     {
         if (!$this->is_connected) {
             return false;
@@ -234,10 +220,11 @@ class CachePhpRedis
      */
     public function get($key)
     {
-        if (!isset($this->keys[$key]))
+        if (!$this->is_connected) {
             return false;
+        }
 
-        return $this->_get($key);
+        return $this->redis->get($key);
     }
 
     public function setQuery($query, $result)
